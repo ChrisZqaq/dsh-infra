@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Infra map",
+    "description": "A sidebar Infra panel plus a repository settings view: the machines this box can reach, how to reach them, and which remote and key each project uses — injected into every session from one source."
+  }
+}

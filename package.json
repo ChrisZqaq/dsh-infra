@@ -1,0 +1,50 @@
+{
+  "name": "@local/dsh-infra",
+  "version": "0.1.1",
+  "description": "Infra knowledge base for DeepSeek Harness: what machines you can reach, how, and which rules agents must follow.",
+  "type": "module",
+  "license": "MIT",
+  "author": "ChrisZqaq",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "infra",
+    "ssh",
+    "knowledge-base"
+  ],
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "host/",
+    "locale/",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "yaml": "^2.6.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}

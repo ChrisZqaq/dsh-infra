@@ -1,0 +1,34 @@
+# 放到 ~/.dsh/infra/infra.yml（全局）或 <项目>/.dsh/infra.yml（项目级）。
+# 这里只放“指针”：命令、主机名、key 的路径。密码、私钥、token 一律不进来。
+version: 1
+
+# 项目级文件里可以写项目名；全局文件里写会被项目文件覆盖。
+project: aluolaCRM
+
+hosts:
+  home:
+    label: 家里的 Linux
+    command: ssh home
+    os: Ubuntu 24.04
+    specs: i5-12400 / 32G
+    note: 只读巡检可以先做，重启/改配置先问
+  tx:
+    label: 腾讯云
+    command: ssh tx
+    specs: 2C4G
+    note: 生产机
+    check: ssh -o BatchMode=yes -o ConnectTimeout=5 tx true
+
+git:
+  dsh-token-pill:
+    label: dsh-token-pill
+    remote: git@github.com:ChrisZqaq/dsh-token-pill.git
+    auth: ssh
+    key: ~/.ssh/id_ed25519
+    rule: 已有 key，不要新建；不要改成 https
+
+# 自定义拦截规则：match 是正则（不分大小写），命中就拒绝并给出 reason。
+rules:
+  - id: no-wipe
+    match: (^|[\s;&|])rm\s+-rf\s+/(?!tmp)
+    reason: 不要整目录删除，先在面板里确认目标
