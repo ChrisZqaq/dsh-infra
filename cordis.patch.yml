@@ -1,8 +1,8 @@
 # dsh-infra bundle patch.
 #
-# One Host row mounts the package. The sidebar panel and the conversation-view
-# repo card are both Client halves declared in package.json `dsh.client`; the row
-# id, the client factory id, and the package name must all agree.
+# One Host row mounts the package. The sidebar $ entry and the panel behind it
+# are both Client halves declared in package.json `dsh.client`; the row id, the
+# client factory id, and the package name must all agree.
 - insert:
     - id: dsh-infra
       name: '@local/dsh-infra'

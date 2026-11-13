@@ -5,6 +5,12 @@ node_modules/
 infra.yml
 infra*.yml
 !infra.sample.yml
+assets.yml
+assets*.yml
+!examples/assets.example.yml
+snapshots.jsonl
+# 设计原型（Kimi 产出，含自己的 node_modules，不进仓）
+app/
 *.pem
 *.p12
 id_rsa

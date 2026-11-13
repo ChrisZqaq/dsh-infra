@@ -1,7 +1,7 @@
 {
   "name": "@local/dsh-infra",
-  "version": "0.1.1",
-  "description": "Infra knowledge base for DeepSeek Harness: what machines you can reach, how, and which rules agents must follow.",
+  "version": "0.2.0",
+  "description": "Personal asset ledger for DeepSeek Assistant: money, machines, GitHub repositories and API keys, with subtotals and per-save snapshots. Data stays outside the repository.",
   "type": "module",
   "license": "MIT",
   "author": "ChrisZqaq",
@@ -9,9 +9,10 @@
     "dsh",
     "dsh-plugin",
     "cordis",
+    "assets",
+    "ledger",
     "infra",
-    "ssh",
-    "knowledge-base"
+    "net-worth"
   ],
   "main": "./index.js",
   "exports": {
@@ -27,6 +28,7 @@
     "locale/",
     "icon.svg",
     "cordis.patch.yml",
+    "examples/",
     "README.md",
     "LICENSE"
   ],

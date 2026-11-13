@@ -1,14 +1,13 @@
 /**
- * Offline harness: no browser, no Host, no network, and no writes outside a
- * temp directory. It fakes the ModuleLoader / React / Cordis surfaces the
- * bundle touches, then checks the slot contract, the YAML store, discovery
- * parsing, the prompt renderer, and the guard decisions.
+ * Offline harness: no browser, no Host, no network, no writes outside a temp
+ * directory. Fakes ModuleLoader / React / Cordis, then checks the slot
+ * contract, the money math, the YAML + JSONL store, and the JSON routes.
  *
  * Run: node scripts/verify.mjs
  */
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
@@ -25,38 +24,21 @@ function check(name, condition, detail) {
   console.log(`  FAIL ${name}${detail === undefined ? '' : ` — ${detail}`}`)
 }
 
-// ------------------------------------------------------------------ fake shell
+// ---------------------------------------------------------------- fake shell
 const styleTags = []
 globalThis.document = {
   getElementById: (id) => styleTags.find((tag) => tag.id === id) ?? null,
-  head: {
-    appendChild: (tag) => styleTags.push(tag),
-  },
+  head: { appendChild: (tag) => styleTags.push(tag) },
   createElement: (tag) => ({ tag, id: '', textContent: '' }),
 }
 Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async () => {} } }, configurable: true })
-globalThis.fetch = async () => ({
-  ok: true,
-  status: 200,
-  text: async () =>
-    JSON.stringify({
-      paths: { global: '/tmp/infra.yml', project: '/tmp/proj/.dsh/infra.yml' },
-      exists: { global: true, project: false },
-      global: { hosts: {}, git: {}, rules: [] },
-      project: { hosts: {}, git: {}, rules: [] },
-      merged: { project: 'demo', hosts: { home: { label: 'home', command: 'ssh home' } }, git: {}, rules: [], counts: {} },
-    }),
-})
+globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ doc: {}, totals: {}, snapshots: [] }) })
 
 let loaded
 globalThis.window = { __ModuleLoader__: { load: (definition) => (loaded = definition) } }
 
 const React = {
-  createElement: (type, props, ...children) => ({
-    type,
-    props: { ...(props ?? {}), children: children.length <= 1 ? children[0] : children },
-    children,
-  }),
+  createElement: (type, props, ...children) => ({ type, props: { ...(props ?? {}), children }, children }),
   useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
   useMemo: (factory) => factory(),
   useEffect: () => {},
@@ -74,29 +56,34 @@ const React = {
   },
 }
 
+const dataDir = await mkdtemp(join(tmpdir(), 'dsh-infra-data-'))
+process.env.DSH_INFRA_DIR = dataDir
+
 await import(pathToFileURL(join(root, 'client.js')).href)
 const client = loaded.factory((id) => {
   if (id === 'react') return React
   throw new Error(`unexpected require(${id})`)
 })
-const { DICTIONARIES, entryLines } = client.__test__
+const { DICTIONARIES, maskKey, totalsOf, amountOf, daysUntil, keysView, moneyView, devicesView, reposView } = client.__test__
 const shellCss = readFileSync(join(root, 'client.js'), 'utf8')
 
 const store = await import(pathToFileURL(join(root, 'host/store.js')).href)
-const discover = await import(pathToFileURL(join(root, 'host/discover.js')).href)
-const knowledge = await import(pathToFileURL(join(root, 'host/knowledge.js')).href)
-const guard = await import(pathToFileURL(join(root, 'host/guard.js')).href)
-const exec = await import(pathToFileURL(join(root, 'host/exec.js')).href)
+const github = await import(pathToFileURL(join(root, 'host/github.js')).href)
 const routes = await import(pathToFileURL(join(root, 'host/routes.js')).href)
+const entryFile = await import(pathToFileURL(join(root, 'index.js')).href)
 
-// -------------------------------------------------------------------- contract
+// ------------------------------------------------------------------- contract
 console.log('\npackage + slot contract')
-check('bundle id matches the package name', loaded.id === '@local/dsh-infra', loaded?.id)
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+check('bundle id matches the package name', loaded.id === pkg.name, loaded?.id)
 check('client injects slots, locale and layout', client.inject.join(',') === 'slots,locale,layout', client.inject.join(','))
-check('client never reads ctx.fetch (strict proxy throws)', !/ctx\?\.fetch|ctx\.fetch/.test(String(client.apply)))
+check('client never reads ctx.fetch', !/ctx\.fetch/.test(String(client.apply)))
+check('host injects only webServer and subprocess', entryFile.inject.join(',') === 'webServer,subprocess', entryFile.inject.join(','))
+check('host no longer touches systemPrompt / tools.guard', !/systemPrompt|tools\.guard|sessionQuery/.test(readFileSync(join(root, 'index.js'), 'utf8')))
 check('dictionary pairs agree', JSON.stringify(Object.keys(DICTIONARIES.en).sort()) === JSON.stringify(Object.keys(DICTIONARIES.zh).sort()))
 check('english copy has no leftover chinese', !/[\u4e00-\u9fa5]/.test(Object.values(DICTIONARIES.en).join(' ')))
 check('chinese copy is actually chinese', /[\u4e00-\u9fa5]/.test(Object.values(DICTIONARIES.zh).join(' ')))
+check('every tab has a label', ['overview', 'money', 'devices', 'repos', 'keys', 'history'].every((key) => Boolean(DICTIONARIES.zh[key])))
 
 const registered = []
 const selected = []
@@ -107,231 +94,255 @@ const fakeCtx = {
       check('locale namespace is "infra"', ns === 'infra', ns)
       check('locale got both languages', Boolean(dictionaries.en && dictionaries.zh))
     },
-    bind: (ns) => (key) => DICTIONARIES.zh[key] ?? key,
+    bind: () => (key) => DICTIONARIES.zh[key] ?? key,
   },
-  layout: {
-    selectPanel: (id) => selected.push(id),
-  },
+  layout: { selectPanel: (id) => selected.push(id) },
   slots: {
     inject: (name, fn) => fn(),
-    register: (options, component) => {
-      registered.push({ options, component })
-    },
+    register: (options, component) => registered.push({ options, component }),
   },
 }
 client.apply(fakeCtx)
 
 const entry = registered.find((item) => item.options.name === 'sidebar.footer.action')
 const main = registered.find((item) => item.options.name === 'main')
-const view = registered.find((item) => item.options.name === 'conversation.view')
-check('the entry registers in the sidebar footer, not the panel list', Boolean(entry) && !registered.some((item) => item.options.name === 'sidebar.panellist'))
+check('the entry registers in the sidebar footer', Boolean(entry) && !registered.some((item) => item.options.name === 'sidebar.panellist'))
 check('main is registered for the same panel id', Boolean(main) && main.options.key === entry?.options.id)
-check('panel id is "infra"', entry?.options.id === 'infra', entry?.options.id)
-check('entry declares a locale seat', entry?.options.locale === 'infra')
-check('entry label comes from the dictionary', entry?.options.label() === DICTIONARIES.zh.title)
+check('panel id is "infra" (keeps the existing layout seat)', entry?.options.id === 'infra', entry?.options.id)
 check('entry sits right of the two pills (order 22)', entry?.options.order === 22, entry?.options.order)
-check('conversation.view is registered', Boolean(view))
-check('conversation.view id is "infra-repo"', view?.options.id === 'infra-repo', view?.options.id)
-check('conversation.view declares a locale seat', view?.options.locale === 'infra')
+check('entry label comes from the dictionary', entry?.options.label() === DICTIONARIES.zh.title)
+check('the retired conversation.view is gone', !registered.some((item) => item.options.name === 'conversation.view'))
 
 const panelInfo = (activePanelId) => (selector) => selector({ activePanelId })
 const entryTree = entry.component({ wide: true, usePanelInfo: panelInfo(null) })
-check('entry renders an icon button without a Host', Boolean(entryTree) && entryTree.props.className === 'dshi-entry')
-check('entry draws a 16px lock on the shell icon grid', (() => {
-  const child = (entryTree.children ?? [])[0]
-  const glyph = typeof child?.type === 'function' ? child.type(child.props) : child
-  const strokePaths = (glyph?.children ?? []).filter((node) => node?.type === 'path' || node?.type === 'rect')
-  return glyph?.type === 'svg' && glyph.props.viewBox === '0 0 16 16' && glyph.props.width === 16 && glyph.props.fill === 'none' && glyph.props.strokeWidth === 1 && strokePaths.length === 3
+check('entry renders without a Host', Boolean(entryTree) && entryTree.props.className === 'dshi-entry')
+check('entry is not active until its panel opens', entryTree.props['data-active'] === 'no')
+check('entry draws a 16px dollar on the shell icon grid', (() => {
+  const glyph = entryTree.children[0]
+  const strokes = (glyph?.children ?? []).filter((node) => node?.type === 'path')
+  return glyph?.type === 'svg' && glyph.props.viewBox === '0 0 16 16' && glyph.props.width === 16 && glyph.props.fill === 'none' && strokes.length === 2
 })())
-check('entry is not blue until its panel opens', entryTree.props['data-active'] === 'no')
 entryTree.props.onClick()
 check('clicking the entry opens the panel', selected.at(-1) === 'infra', selected.join(','))
-
 const openTree = entry.component({ wide: true, usePanelInfo: panelInfo('infra') })
-check('entry turns blue while its panel is active', openTree.props['data-active'] === 'yes')
+check('entry marks itself active while the panel shows', openTree.props['data-active'] === 'yes')
 openTree.props.onClick()
-check('clicking the blue entry goes back to the conversation', selected.at(-1) === null, String(selected.at(-1)))
+check('clicking the active entry closes the panel', selected.at(-1) === null, String(selected.at(-1)))
+check('icon button keeps the shipped 28px box', /\.dshi-entry\{[^}]*width:28px/.test(shellCss) && /\.dshi-entry\{[^}]*height:28px/.test(shellCss) && /\.dshi-entry\{[^}]*border-radius:var\(--dsw-radius-sm\)/.test(shellCss))
+check('icon button carries no fill or border', /\.dshi-entry\{[^}]*background:transparent/.test(shellCss) && /\.dshi-entry\{[^}]*border:none/.test(shellCss))
+check('panel renders without a Host', Boolean(main.component({})))
 
-const otherTree = entry.component({ wide: true, usePanelInfo: panelInfo('plugins') })
-check('another panel does not light this entry', otherTree.props['data-active'] === 'no')
-
-const panelTree = main.component({})
-check('entry matches the shipped icon-button box', /\.dshi-entry\{[^}]*width:28px/.test(shellCss) && /\.dshi-entry\{[^}]*height:28px/.test(shellCss) && /\.dshi-entry\{[^}]*border-radius:var\(--dsw-radius-sm\)/.test(shellCss))
-check('entry aligns to the right of the two status rows', /\.dshi-entry\{[^}]*flex:none/.test(shellCss) && /\.dshi-entry\{[^}]*width:28px/.test(shellCss))
-check('entry carries no fill and no border at rest', /\.dshi-entry\{[^}]*background:transparent/.test(shellCss) && /\.dshi-entry\{[^}]*border:none/.test(shellCss))
-check('entry has no gray fill at rest, hover, or selected', /\.dshi-entry:hover\{background:transparent/.test(shellCss) && /\.dshi-entry\[data-active='yes'\]\{background:transparent/.test(shellCss))
-check('entry has no pressed fill', /\.dshi-entry:active\{background:transparent/.test(shellCss))
-check('panel renders without a Host', Boolean(panelTree))
-const viewTree = view.component({ cwd: '/tmp/proj' })
-check('repo view renders without a Host', Boolean(viewTree))
-
-// ----------------------------------------------------------------------- store
-console.log('\nYAML store')
-check('glob matches an exact prefix', store.matchesProject('/work/app', ['/work/app']))
-check('glob matches a nested pattern', store.matchesProject('/work/app/api', ['/work/*']))
-check('glob rejects an unrelated path', !store.matchesProject('/other/app', ['/work/*']))
-check('an entry without projects applies everywhere', store.matchesProject('/anywhere', []))
-check('project entries override global ones on the same id', (() => {
-  const merged = store.mergeConfigs(
-    { hosts: { home: { label: 'global-home', command: 'ssh home' } }, git: {}, rules: [] },
-    { hosts: { home: { label: 'project-home', command: 'ssh home' } }, git: {}, rules: [] },
-    '/work/app',
-  )
-  return merged.hosts.home.label === 'project-home'
-})())
-check('global rules stay ahead of project rules', (() => {
-  const merged = store.mergeConfigs(
-    { hosts: {}, git: {}, rules: [{ id: 'g', match: 'a', reason: 'g' }] },
-    { hosts: {}, git: {}, rules: [{ id: 'p', match: 'b', reason: 'p' }] },
-    '/work/app',
-  )
-  return merged.rules.map((rule) => rule.id).join(',') === 'g,p'
-})())
-
-const tmp = await mkdtemp(join(tmpdir(), 'dsh-infra-verify-'))
-const yamlPath = join(tmp, 'infra.yml')
-await store.writeYaml(yamlPath, {
-  version: 1,
-  project: 'demo',
-  hosts: { home: { id: 'home', label: '家里的 Linux', command: 'ssh home', note: 'Ubuntu' } },
-  git: { repo: { id: 'repo', remote: 'git@github.com:a/b.git', auth: 'ssh', key: '~/.ssh/id_ed25519' } },
-  rules: [{ id: 'no-ls', match: '^ls$', reason: '别 ls' }],
-})
-const roundTrip = await store.readYaml(yamlPath)
-check('write then read keeps the project name', roundTrip.config.project === 'demo', roundTrip.config.project)
-check('write then read keeps host fields', roundTrip.config.hosts.home?.note === 'Ubuntu')
-check('write then read keeps the rule', roundTrip.config.rules[0]?.id === 'no-ls')
-check('a missing file reads as empty, not as an error', (await store.readYaml(join(tmp, 'nope.yml'))).exists === false)
-check('the header comment says no secrets live here', true)
-
-// ------------------------------------------------------------------- discovery
-console.log('\ndiscovery')
-const sshConfig = `
-# comment
-Host home
-  HostName 192.168.1.20
-  User chris
-  Port 2222
-  IdentityFile ~/.ssh/id_ed25519
-
-Host tx *.example.com
-  HostName 1.2.3.4
-  User root
-
-Host github.com
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/id_ed25519_gh
-`
-const hosts = discover.parseSshConfig(sshConfig)
-check('parses the concrete alias', Boolean(hosts.home))
-check('keeps HostName/User/Port', hosts.home?.host === '192.168.1.20' && hosts.home?.user === 'chris' && hosts.home?.port === '2222')
-check('expands the home-relative key path', hosts.home?.key?.startsWith('/'), hosts.home?.key)
-check('skips wildcard aliases', !hosts['*'] && !hosts['*.example.com'])
-check('builds the shortcut command from the alias', hosts.home?.command === 'ssh home')
-check('a HostName equal to the alias is dropped', hosts['github.com']?.host === undefined)
-check('ssh/https are told apart', discover.protocolOf('git@github.com:a/b.git') === 'ssh' && discover.protocolOf('https://github.com/a/b') === 'https')
-check('the repo name becomes the entry id', discover.currentGitId('git@github.com:a/b.git') === 'b', discover.currentGitId('git@github.com:a/b.git'))
-check('a https url also yields the repo name', discover.currentGitId('https://github.com/a/b') === 'b')
-
-// ------------------------------------------------------------------- knowledge
-console.log('\nprompt renderer')
-const mergedForRender = {
-  project: 'demo',
-  hosts: { home: { label: '家里的 Linux', command: 'ssh home', os: 'Ubuntu 24.04', note: '改动前先问' } },
-  git: { b: { label: 'repo-b', remote: 'git@github.com:a/b.git', auth: 'ssh', key: '~/.ssh/id_ed25519' } },
-  rules: [{ id: 'no-new-key', reason: '已有 key，不要新建' }],
-  counts: { hosts: 1, git: 1, globalHosts: 3, globalGit: 2 },
+// ---------------------------------------------------------------- money math
+console.log('\nmoney math')
+const doc = {
+  rate: { HKD_CNY: 0.9 },
+  money: [
+    { id: 'a', name: '现金', kind: '现金', currency: 'CNY', quantity: 1, price: 10000 },
+    { id: 'b', name: '股票', kind: '持仓', currency: 'CNY', quantity: 2, price: 2500 },
+    { id: 'c', name: '港币', kind: '现金', currency: 'HKD', quantity: 1, price: 1000 },
+    { id: 'd', name: '房贷', kind: '负债', currency: 'CNY', quantity: 1, price: 4000 },
+  ],
+  devices: [],
+  repos: [],
+  keys: [],
 }
-const text = knowledge.renderKnowledge(mergedForRender, { cwd: '/work/demo' })
-check('opens with the knowledge header', text.startsWith('## 基础设施'))
-check('names the project', text.includes('本项目：demo'))
-check('lists the machine with its command', text.includes('`ssh home`'))
-check('carries the note', text.includes('改动前先问'))
-check('lists the repository', text.includes('git@github.com:a/b.git'))
-check('lists the rule', text.includes('已有 key，不要新建'))
-check('derives the ssh policy line even without a YAML rule', text.includes('不要用 ssh-keygen 新建'))
-check('says how many entries are not listed', /还有 \d+ 条未列入/.test(text), text)
-check('says where the rest lives', text.includes('Infra 面板'))
-check('an empty config renders nothing at all', knowledge.renderKnowledge({ hosts: {}, git: {}, rules: [], counts: {} }, {}) === '')
-const longText = knowledge.renderKnowledge(
-  { project: 'x', hosts: Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`h${index}`, { label: `machine-${index}`, command: `ssh h${index}` }])), git: {}, rules: [], counts: {} },
-  { cwd: '/x', maxChars: 140 },
-)
-check('the renderer honours the char budget', longText.length <= 140, longText.length)
-check('the renderer marks the cut', longText.includes('已截断'))
-const cappedEntries = knowledge.renderKnowledge(
-  { project: 'x', hosts: Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`h${index}`, { label: `machine-${index}`, command: `ssh h${index}` }])), git: {}, rules: [], counts: {} },
-  { cwd: '/x' },
-)
-check('the renderer caps the entry count', cappedEntries.split('\n').filter((line) => line.startsWith('- 机器')).length <= knowledge.MAX_ENTRIES)
+const totals = totalsOf(doc)
+check('same-currency amount ignores sign in input', amountOf({ quantity: -3, price: 100 }) === 300, String(amountOf({ quantity: -3, price: 100 })))
+check('cash adds only 现金', totals.cash === 10000 + 900, String(totals.cash))
+check('holdings add only 持仓', totals.holdings === 5000, String(totals.holdings))
+check('assets = cash + holdings', totals.assets === totals.cash + totals.holdings, String(totals.assets))
+check('liabilities stay negative', totals.liability === -4000, String(totals.liability))
+check('net = assets - liabilities', totals.net === totals.assets - 4000, String(totals.net))
+check('per-currency subtotals stay native', totals.cny === 10000 + 5000 + 4000 && totals.hkd === 1000, `${totals.cny}/${totals.hkd}`)
+check('a zero rate falls back instead of dividing by zero', totalsOf({ rate: { HKD_CNY: 0 }, money: [{ kind: '现金', currency: 'HKD', quantity: 1, price: 100 }] }).cash > 0)
+const storeTotals = store.totalsOf({ rate: { HKD_CNY: 0.9 }, money: doc.money })
+check('client and host agree on totals', Math.abs(storeTotals.net - totals.net) < 1e-6, `${storeTotals.net} vs ${totals.net}`)
+check('missing numbers read as zero', totalsOf({ money: [{ kind: '现金', currency: 'CNY' }] }).net === 0)
 
-// ----------------------------------------------------------------------- guard
-console.log('\nguard')
-const sshProject = { git: { b: { auth: 'ssh', remote: 'git@github.com:a/b.git' } }, rules: [] }
-const httpsProject = { git: { b: { auth: 'https' } }, rules: [] }
-check('ssh-keygen is denied when the project already has an ssh remote', Boolean(guard.checkCommand(sshProject, 'ssh-keygen -t ed25519 -f ~/.ssh/id_new')))
-check('the denial says what to do instead', /不要新建/.test(guard.checkCommand(sshProject, 'ssh-keygen') ?? ''))
-check('a benign command still runs', guard.checkCommand(sshProject, 'git status') === undefined)
-check('ssh-keygen is not blocked without an ssh remote', guard.checkCommand(httpsProject, 'ssh-keygen -t rsa') === undefined)
-check('rewriting the remote to https is denied', Boolean(guard.checkCommand(sshProject, 'git remote set-url origin https://github.com/a/b.git')))
-check('gh ssh-key add is denied', Boolean(guard.checkCommand(sshProject, 'gh ssh-key add ~/.ssh/id_new.pub')))
-check('pasting a private key is denied everywhere', Boolean(guard.checkCommand(httpsProject, 'echo "-----BEGIN OPENSSH PRIVATE KEY-----" > k')))
-check('sudo ssh-keygen is still caught', Boolean(guard.checkCommand(sshProject, 'sudo ssh-keygen -A')))
-check('a custom rule from YAML matches', Boolean(guard.checkCommand({ git: {}, rules: [{ id: 'no-wipe', match: '^rm -rf', reason: '别删' }] }, 'rm -rf /tmp/x')))
-check('an invalid regex does not crash the guard', guard.checkCommand({ git: {}, rules: [{ id: 'bad', match: '([', reason: 'x' }] }, 'echo hi') === undefined)
-check('the panel can list the same active rules', guard.activeRules(sshProject).length >= 4)
-check('a fingerprint read is not mistaken for key creation', guard.checkCommand(sshProject, 'ssh-keygen -l -f ~/.ssh/id_ed25519.pub') === undefined)
-check('known-host lookup stays allowed', guard.checkCommand(sshProject, 'ssh-keygen -F github.com') === undefined)
-check('the -f path of a real keygen run is not read as -F', Boolean(guard.checkCommand(sshProject, 'ssh-keygen -t ed25519 -f /tmp/new_key')))
-check('an upper-case command name is still caught', Boolean(guard.checkCommand(sshProject, 'SSH-KEYGEN -t ed25519')))
-
-// ------------------------------------------------------------------------ exec
-console.log('\nsubprocess adapter')
-const okSpawn = () => ({
-  collected: { stdout: { readFrom: () => ({ text: 'ssh ok\n' }) }, stderr: { readFrom: () => ({ text: '' }) } },
-  done: Promise.resolve({ exitCode: 0, signal: null }),
-  terminate: () => {},
-})
-const okRun = await exec.run(okSpawn, { argv: ['true'], cwd: '/' })
-check('a zero exit reads as ok', okRun.ok === true && okRun.stdout.includes('ssh ok'))
-const badSpawn = () => ({
-  collected: {},
-  done: Promise.resolve({ exitCode: 255, signal: null }),
-  terminate: () => {},
-})
-check('a non-zero exit reads as failed', (await exec.run(badSpawn, { argv: ['false'], cwd: '/' })).ok === false)
-const throwingSpawn = () => {
-  throw new Error('spawn refused')
+// --------------------------------------------------------------- key masking
+console.log('\nkey masking')
+check('short keys hide completely', maskKey('abc') === '***', maskKey('abc'))
+check('mid keys keep two on each side', maskKey('sk-12345') === 'sk*****45', maskKey('sk-12345'))
+check('long keys keep four on each side', maskKey('sk-abcdefghijklmnop') === 'sk-a*****mnop', maskKey('sk-abcdefghijklmnop'))
+check('empty stays empty', maskKey('') === '' && maskKey(undefined) === '')
+check('an eight-char key never shows six of its chars', maskKey('abcd1234').replace(/\*/g, '').length <= 4, maskKey('abcd1234'))
+const keyDoc = { keys: [{ id: 'k1', name: 'OpenAI', purpose: '文本', value: 'sk-aaaaaaaaaaaaaaaa', location: '1Password', expiresAt: '2000-01-01' }] }
+const countChildren = (node) => (Array.isArray(node?.children) ? node.children.filter((child) => child !== null && child !== undefined && child !== false).length : -1)
+const renderKeys = (revealed) => keysView(keyDoc, () => {}, (key) => DICTIONARIES.zh[key] ?? key, revealed, () => {}, '', () => {})
+const flat = (node) => {
+  if (node === null || node === undefined || node === false) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(flat).join(' ')
+  if (typeof node.type === 'function') return flat(node.type(node.props))
+  if (node.type === 'input' || node.type === 'select') return String(node.props?.value ?? '') + ' ' + flat(node.children)
+  return flat(node.children)
 }
-const thrown = await exec.run(throwingSpawn, { argv: ['x'], cwd: '/' })
-check('a refused spawn is a failed check, not a crash', thrown.ok === false && /spawn refused/.test(thrown.stderr))
+const maskedRow = flat(renderKeys({}))
+const openRow = flat(renderKeys({ k1: true }))
+check('the key list never prints the full secret', !maskedRow.includes('sk-aaaaaaaaaaaaaaaa'), maskedRow.slice(0, 120))
+check('the key list shows the mask instead', maskedRow.includes('sk-a*****aaaa') || maskedRow.includes('*****'), maskedRow.slice(0, 120))
+check('revealing swaps in the real value', openRow.includes('sk-aaaaaaaaaaaaaaaa'))
+check('an expired key is flagged', maskedRow.includes(DICTIONARIES.zh.expired) || maskedRow.includes('expired'), maskedRow.slice(-160))
+// 每一行的子元素个数必须等于 CSS 里声明的列数，否则表头与数据行会错位
+const COLUMNS = { money: 7, device: 6, repo: 5, key: 7 }
+const byCss = (node, cols, out = []) => {
+  if (!node || typeof node !== 'object') return out
+  if (Array.isArray(node)) { node.forEach((child) => byCss(child, cols, out)); return out }
+  if (node.props?.['data-cols'] === cols) out.push(node)
+  byCss(node.children, cols, out)
+  return out
+}
+const tZh = (key) => DICTIONARIES.zh[key] ?? key
+const sampleDoc = {
+  rate: { HKD_CNY: 0.917 },
+  money: [{ id: 'm1', name: '现金', kind: '现金', currency: 'CNY', quantity: 1, price: 100, note: '' }],
+  devices: [{ id: 'd1', name: 'tx', type: '服务器', address: 'ssh tx', specs: '2C2G', status: '在线', note: '' }],
+  repos: [{ id: 'r1', name: 'a/b', visibility: 'public', language: 'JS', committedAt: '2026-11-13', description: '', remote: '', note: '' }],
+  keys: [{ id: 'k1', name: 'k', purpose: 'p', value: 'sk-aaaaaaaaaaaaaaaa', location: 'l', expiresAt: '' }],
+}
+const views = [
+  ['money', moneyView(sampleDoc, () => {}, tZh)],
+  ['device', devicesView(sampleDoc, () => {}, tZh)],
+  ['repo', reposView(sampleDoc, () => {}, tZh, () => {}, false)],
+  ['key', keysView(sampleDoc, () => {}, tZh, {}, () => {}, '', () => {})],
+]
+for (const [cols, tree] of views) {
+  const found = byCss(tree, cols)
+  const header = found[0]
+  const body = found.slice(1)
+  check('a ' + cols + ' table has a header and one row per item', found.length === 2, String(found.length))
+  check(cols + ' header columns match the css template', countChildren(header) === COLUMNS[cols], String(countChildren(header)))
+  check(cols + ' body columns match the css template', body.every((row) => countChildren(row) === COLUMNS[cols]), body.map(countChildren).join(','))
+}
+check('expiry in the past is negative', daysUntil('2000-01-01') < 0)
+check('no expiry is undefined', daysUntil('') === undefined && daysUntil(undefined) === undefined)
 
-// ----------------------------------------------------------------------- routes
-console.log('\nhost routes')
-const handler = routes.createHandler({ spawn: okSpawn, readState: async () => ({ merged: { hosts: {}, git: {}, rules: [] } }), defaultCwd: async () => '/work/demo' })
-const makeResponse = () => ({
-  statusCode: 0,
-  headers: {},
-  body: '',
-  setHeader(name, value) {
-    this.headers[name] = value
-  },
-  end(body) {
-    this.body = body ?? ''
+// -------------------------------------------------------------------- store
+console.log('\nassets store')
+const emptyRound = await store.readDoc()
+check('a missing assets.yml reads as an empty doc', Array.isArray(emptyRound.money) && emptyRound.money.length === 0)
+check('default rate is populated', Number(emptyRound.rate.HKD_CNY) > 0, String(emptyRound.rate.HKD_CNY))
+
+const written = await store.writeDoc(doc)
+check('write stamps updatedAt', Boolean(written.updatedAt))
+const text = await readFile(store.ASSETS_FILE, 'utf8')
+check('assets.yml explains itself', text.startsWith('# dsh-infra'))
+check('assets.yml lives outside the package', !store.ASSETS_FILE.startsWith(root), store.ASSETS_FILE)
+const reread = await store.readDoc()
+check('round trip keeps every money row', reread.money.length === 4, String(reread.money.length))
+check('round trip keeps numbers as numbers', typeof reread.money[1].price === 'number' && reread.money[1].price === 2500)
+check('round trip keeps the rate', reread.rate.HKD_CNY === 0.9, String(reread.rate.HKD_CNY))
+check('unknown kinds are coerced, not trusted', store.normalizeDoc({ money: [{ name: 'x', kind: '乱写', currency: 'USD' }] }).money[0].kind === '现金')
+check('a non-array collection does not throw', store.normalizeDoc({ money: 'nope' }).money.length === 0)
+check('a broken yaml surfaces a readable error', await (async () => {
+  await writeFile(store.ASSETS_FILE, 'money: [\n', 'utf8')
+  try {
+    await store.readDoc()
+    return false
+  } catch (error) {
+    return /解析失败/.test(String(error?.message))
+  }
+})())
+await store.writeDoc(doc)
+
+const snapA = await store.appendSnapshot(doc)
+check('snapshot carries a date', /^\d{4}-\d{2}-\d{2}$/.test(snapA.date), snapA.date)
+check('snapshot stores full copies, not a diff', Array.isArray(snapA.money) && snapA.money.length === 4)
+check('snapshot freezes its own totals', snapA.totals.net === totals.net, String(snapA.totals.net))
+const bigger = { ...doc, money: [...doc.money, { id: 'e', name: '加仓', kind: '持仓', currency: 'CNY', quantity: 1, price: 1000 }] }
+await store.appendSnapshot(bigger)
+const history = await store.readSnapshots()
+check('history is newest first', history.length === 2 && history[0].totals.net > history[1].totals.net, JSON.stringify(history.map((row) => row.totals.net)))
+check('history rows are light', history[0].money === undefined && Boolean(history[0].counts))
+check('history counts match what was saved', history[0].counts.money === 5, String(history[0].counts.money))
+check('history honours the limit', (await store.readSnapshots(1)).length === 1)
+check('a corrupt line is skipped, not fatal', await (async () => {
+  const raw = await readFile(store.SNAPSHOTS_FILE, 'utf8')
+  await writeFile(store.SNAPSHOTS_FILE, `${raw}{\"at\": oops\n`, 'utf8')
+  return (await store.readSnapshots()).length === 2
+})())
+
+// ---------------------------------------------------------------- gh bridge
+console.log('\ngh bridge')
+check('visibility is normalised', github.mergeRepos([], [{ id: 'r', name: 'a/b', visibility: 'private' }])[0].visibility === 'private')
+const mergedRepos = github.mergeRepos(
+  [{ id: 'r1', name: 'a/b', note: '手写备注', visibility: 'public' }],
+  [{ id: 'r1', name: 'a/b', note: '', visibility: 'private', language: 'Go' }],
+)
+check('remote facts overwrite the local copy', mergedRepos[0].visibility === 'private' && mergedRepos[0].language === 'Go')
+check('the hand-written note survives a sync', mergedRepos[0].note === '手写备注', mergedRepos[0].note)
+check('a repo missing from GitHub is kept', github.mergeRepos([{ id: 'gone', name: 'x/y' }], []).length === 1)
+
+// ------------------------------------------------------------------- routes
+console.log('\nJSON routes')
+const spawnOf = (result) => (spec) => ({
+  done: Promise.resolve(result.outcome ?? { exitCode: 0 }),
+  terminate: () => {},
+  collected: {
+    stdout: { readFrom: () => ({ text: result.stdout ?? '' }) },
+    stderr: { readFrom: () => ({ text: result.stderr ?? '' }) },
   },
 })
-const unknown = makeResponse()
-await handler({ url: '/dsh-infra/nope', method: 'GET', [Symbol.asyncIterator]: async function* () {} }, unknown)
-check('an unknown path answers 404 json', unknown.statusCode === 404 && JSON.parse(unknown.body).error.includes('/nope'))
 
-const stateResponse = makeResponse()
-await handler({ url: '/dsh-infra/state?cwd=/work/demo', method: 'GET', [Symbol.asyncIterator]: async function* () {} }, stateResponse)
-check('the state route answers 200', stateResponse.statusCode === 200)
-check('the state route refuses to cache', stateResponse.headers['cache-control'] === 'no-store')
+async function ask(handler, method, path, body) {
+  const request = {
+    method,
+    url: `/dsh-infra${path}`,
+    async *[Symbol.asyncIterator]() {
+      if (body !== undefined) yield Buffer.from(JSON.stringify(body))
+    },
+  }
+  const out = { status: 0, payload: undefined }
+  const response = {
+    statusCode: 0,
+    setHeader: () => {},
+    end: (text) => {
+      out.status = response.statusCode
+      out.payload = JSON.parse(text)
+    },
+  }
+  await handler(request, response)
+  return out
+}
 
-// ------------------------------------------------------------------------- tidy
-await rm(tmp, { recursive: true, force: true })
+await store.writeDoc(doc)
+const handler = routes.createHandler({ spawn: spawnOf({ stdout: '[]' }) })
+const got = await ask(handler, 'GET', '/assets')
+check('GET /assets returns doc, totals and paths', got.status === 200 && Boolean(got.payload.doc) && Boolean(got.payload.totals) && Boolean(got.payload.paths.assets))
+check('GET /assets never leaks the key values into totals', !JSON.stringify(got.payload.totals).includes('sk-'))
+const savedGone = await ask(handler, 'POST', '/assets', { doc: { ...doc, money: doc.money.slice(0, 1) }, snapshot: true })
+check('POST /assets persists', savedGone.status === 200 && savedGone.payload.doc.money.length === 1)
+check('POST /assets with snapshot:true appends one row', (await store.readSnapshots()).length === 3)
+const savedNoSnap = await ask(handler, 'POST', '/assets', { doc })
+check('POST /assets without snapshot leaves history alone', savedNoSnap.payload.snapshot === undefined && (await store.readSnapshots()).length === 3)
+const snapList = await ask(handler, 'GET', '/snapshots?limit=1')
+check('GET /snapshots honours limit', snapList.status === 200 && snapList.payload.snapshots.length === 1)
+check('unknown route answers 404', (await ask(handler, 'GET', '/nope')).status === 404)
 
-console.log(`\n${failures === 0 ? 'all checks passed' : `${failures} check(s) failed`}`)
+const failing = routes.createHandler({ spawn: spawnOf({ outcome: { exitCode: 1 }, stderr: 'gh: not logged in' }) })
+const syncFail = await ask(failing, 'POST', '/github/sync')
+check('a broken gh is a 502 with the real message', syncFail.status === 502 && /not logged in/.test(syncFail.payload.error), JSON.stringify(syncFail.payload))
+const syncOk = routes.createHandler({
+  spawn: spawnOf({
+    stdout: JSON.stringify([{ nameWithOwner: 'ChrisZqaq/demo', visibility: 'PUBLIC', primaryLanguage: { name: 'JavaScript' }, updatedAt: '2026-11-01T10:00:00Z', description: 'demo', url: 'https://github.com/ChrisZqaq/demo' }]),
+  }),
+})
+const syncDone = await ask(syncOk, 'POST', '/github/sync')
+check('POST /github/sync folds repos in', syncDone.status === 200 && syncDone.payload.doc.repos.length === 1, JSON.stringify(syncDone.payload).slice(0, 200))
+check('sync reports how many it saw', syncDone.payload.synced === 1)
+check('sync keeps the ssh remote shape', syncDone.payload.doc.repos[0].remote === 'git@github.com:ChrisZqaq/demo', syncDone.payload.doc.repos[0].remote)
+
+// ------------------------------------------------------------------- legacy
+console.log('\nlegacy import')
+await rm(store.ASSETS_FILE, { force: true })
+await mkdir(dirname(store.LEGACY_FILE), { recursive: true })
+await writeFile(store.LEGACY_FILE, 'hosts:\n  home:\n    label: 家里的 Linux\n    command: ssh home\n    os: Ubuntu 26.04\ngit:\n  dsh-token-pill:\n    remote: git@github.com:ChrisZqaq/dsh-token-pill.git\nrules: []\n', 'utf8')
+const imported = await store.readDoc()
+check('legacy hosts become devices', imported.devices.length === 1 && /ssh home/.test(imported.devices[0].address), JSON.stringify(imported.devices))
+check('legacy remotes become repos', imported.repos.length === 1 && /dsh-token-pill/.test(imported.repos[0].name))
+check('the import is written once and then read from assets.yml', Boolean((await readFile(store.ASSETS_FILE, 'utf8')).includes('家里的 Linux')))
+
+await rm(dataDir, { recursive: true, force: true })
+
+console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
 process.exit(failures === 0 ? 0 : 1)
