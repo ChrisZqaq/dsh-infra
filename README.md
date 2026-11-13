@@ -85,7 +85,8 @@ keys:
 已经在 `desktop` profile 里（`link:` 指向本仓）。全新机器：
 
 ```bash
-pnpm install --offline     # 只有一个运行时依赖：yaml
+pnpm install               # 只有一个运行时依赖：yaml
+pnpm install --offline     # 本机已有 pnpm store 时用这个
 ```
 
 或者从聚合仓装：

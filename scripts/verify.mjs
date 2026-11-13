@@ -67,10 +67,21 @@ const client = loaded.factory((id) => {
 const { DICTIONARIES, maskKey, totalsOf, amountOf, daysUntil, keysView, moneyView, devicesView, reposView } = client.__test__
 const shellCss = readFileSync(join(root, 'client.js'), 'utf8')
 
-const store = await import(pathToFileURL(join(root, 'host/store.js')).href)
-const github = await import(pathToFileURL(join(root, 'host/github.js')).href)
-const routes = await import(pathToFileURL(join(root, 'host/routes.js')).href)
-const entryFile = await import(pathToFileURL(join(root, 'index.js')).href)
+const loadHostModule = async (name) => {
+  try {
+    return await import(pathToFileURL(join(root, name)).href)
+  } catch (error) {
+    if (error?.code === 'ERR_MODULE_NOT_FOUND' && String(error.message).includes("'yaml'")) {
+      console.log('\n  FAIL host modules imported — 先装依赖：pnpm install（离线可用 pnpm install --offline）\n')
+      process.exit(1)
+    }
+    throw error
+  }
+}
+const store = await loadHostModule('host/store.js')
+const github = await loadHostModule('host/github.js')
+const routes = await loadHostModule('host/routes.js')
+const entryFile = await loadHostModule('index.js')
 
 // ------------------------------------------------------------------- contract
 console.log('\npackage + slot contract')
