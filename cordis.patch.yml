@@ -1,9 +1,9 @@
-# dsh-infra bundle patch.
+# dsh-ledger bundle patch.
 #
 # One Host row mounts the package. The sidebar $ entry and the panel behind it
 # are both Client halves declared in package.json `dsh.client`; the row id, the
 # client factory id, and the package name must all agree.
 - insert:
-    - id: dsh-infra
-      name: '@local/dsh-infra'
+    - id: dsh-ledger
+      name: '@local/dsh-ledger'
       config: {}

@@ -15,7 +15,9 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 
 let failures = 0
+let checks = 0
 function check(name, condition, detail) {
+  checks += 1
   if (condition) {
     console.log(`  ok   ${name}`)
     return
@@ -29,7 +31,12 @@ const styleTags = []
 globalThis.document = {
   getElementById: (id) => styleTags.find((tag) => tag.id === id) ?? null,
   head: { appendChild: (tag) => styleTags.push(tag) },
-  createElement: (tag) => ({ tag, id: '', textContent: '' }),
+  createElement: (tag) => ({
+    tag,
+    textContent: '',
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = String(value) },
+  }),
 }
 Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async () => {} } }, configurable: true })
 globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ doc: {}, totals: {}, snapshots: [] }) })
@@ -56,7 +63,7 @@ const React = {
   },
 }
 
-const dataDir = await mkdtemp(join(tmpdir(), 'dsh-infra-data-'))
+const dataDir = await mkdtemp(join(tmpdir(), 'dsh-ledger-data-'))
 process.env.DSH_INFRA_DIR = dataDir
 
 await import(pathToFileURL(join(root, 'client.js')).href)
@@ -64,8 +71,12 @@ const client = loaded.factory((id) => {
   if (id === 'react') return React
   throw new Error(`unexpected require(${id})`)
 })
-const { DICTIONARIES, maskKey, totalsOf, amountOf, daysUntil, keysView, moneyView, devicesView, reposView } = client.__test__
+const { DICTIONARIES, maskKey, totalsOf, amountOf, daysUntil, keysView, moneyView, devicesView, reposView, overviewView, historyView } = client.__test__
 const shellCss = readFileSync(join(root, 'client.js'), 'utf8')
+check('styles mount synchronously during module materialization', styleTags.length === 1 && styleTags[0]?.tag === 'style' && styleTags[0]?.textContent.includes('.dshi-root{'))
+check('styles declare loader ownership', styleTags[0]?.attributes?.['data-plugin-css'] === 'ledger')
+check('style mount is not deferred behind a React effect', !/function useStyleOnce|useStyleOnce\(\)/.test(shellCss))
+check('factory installs styles before returning the plugin', /installStyles\(\)[\s\S]*return \{[\s\S]*inject: \['slots', 'locale', 'layout'\]/.test(shellCss))
 
 const loadHostModule = async (name) => {
   try {
@@ -179,6 +190,14 @@ check('empty stays empty', maskKey('') === '' && maskKey(undefined) === '')
 check('an eight-char key never shows six of its chars', maskKey('abcd1234').replace(/\*/g, '').length <= 4, maskKey('abcd1234'))
 const keyDoc = { keys: [{ id: 'k1', name: 'OpenAI', purpose: '文本', value: 'sk-aaaaaaaaaaaaaaaa', location: '1Password', expiresAt: '2000-01-01' }] }
 const countChildren = (node) => (Array.isArray(node?.children) ? node.children.filter((child) => child !== null && child !== undefined && child !== false).length : -1)
+const byType = (node, type, out = []) => {
+  if (!node || typeof node !== 'object') return out
+  if (Array.isArray(node)) { node.forEach((child) => byType(child, type, out)); return out }
+  if (typeof node.type === 'function') return byType(node.type(node.props), type, out)
+  if (node.type === type) out.push(node)
+  byType(node.children, type, out)
+  return out
+}
 const renderKeys = (revealed) => keysView(keyDoc, () => {}, (key) => DICTIONARIES.zh[key] ?? key, revealed, () => {}, '', () => {})
 const flat = (node) => {
   if (node === null || node === undefined || node === false) return ''
@@ -225,6 +244,31 @@ for (const [cols, tree] of views) {
   check(cols + ' header columns match the css template', countChildren(header) === COLUMNS[cols], String(countChildren(header)))
   check(cols + ' body columns match the css template', body.every((row) => countChildren(row) === COLUMNS[cols]), body.map(countChildren).join(','))
 }
+check('secret actions use a div, never nested buttons', byCss(renderKeys({}), 'key')[1].children[5].type === 'div')
+check('secret controls have accessible labels', byType(renderKeys({}), 'button').filter((button) => ['查看 OpenAI', '复制 OpenAI'].includes(button.props['aria-label'])).length === 2, byType(renderKeys({}), 'button').map((button) => button.props['aria-label']).join(','))
+check('narrow tables scroll inside their own container', /\.dshi-table\{[^}]*overflow-x:auto/.test(shellCss) && /@container \(max-width:480px\)/.test(shellCss))
+check('trend has a readable summary and reduced motion support', byType(overviewView(sampleDoc, [], tZh), 'svg').every((svg) => svg.props['aria-label']) && /prefers-reduced-motion/.test(shellCss))
+check('clipboard is requested only when the copy action is invoked', await (async () => {
+  let value = ''
+  navigator.clipboard.writeText = async (text) => { value = text }
+  let copied = ''
+  const tree = keysView(keyDoc, () => {}, tZh, {}, () => {}, copied, (id) => { copied = id })
+  const row = byCss(tree, 'key')[1]
+  await row.children[5].children[1].props.onClick()
+  return value === keyDoc.keys[0].value && copied === 'k1' && !flat(renderKeys({})).includes(keyDoc.keys[0].value)
+})())
+check('history and overview render before any snapshot exists', Boolean(flat(historyView([], tZh)) && flat(overviewView(sampleDoc, [], tZh))))
+const snapshots = [
+  { at: '2026-11-13T04:00:00Z', date: '2026-11-13', totals: { net: 130 }, counts: { money: 1 } },
+  { at: '2026-11-12T04:00:00Z', date: '2026-11-12', totals: { net: 100 }, counts: { money: 1 } },
+]
+check('history shows the latest delta against the next row', flat(historyView(snapshots, tZh)).includes('30.00'), flat(historyView(snapshots, tZh)))
+let navigated = ''
+const overview = overviewView(sampleDoc, snapshots, tZh, (tab) => { navigated = tab })
+check('overview has a native SVG trend and no chart dependency', byType(overview, 'svg').length > 0 && !/recharts|chart\.js/i.test(readFileSync(join(root, 'package.json'), 'utf8')), String(byType(overview, 'svg').length))
+const resources = byType(overview, 'button').filter((button) => button.props.className === 'dshi-resource')
+resources[0].props.onClick()
+check('overview resource links navigate without routing overhead', navigated === 'devices', navigated)
 check('expiry in the past is negative', daysUntil('2000-01-01') < 0)
 check('no expiry is undefined', daysUntil('') === undefined && daysUntil(undefined) === undefined)
 
@@ -237,7 +281,7 @@ check('default rate is populated', Number(emptyRound.rate.HKD_CNY) > 0, String(e
 const written = await store.writeDoc(doc)
 check('write stamps updatedAt', Boolean(written.updatedAt))
 const text = await readFile(store.ASSETS_FILE, 'utf8')
-check('assets.yml explains itself', text.startsWith('# dsh-infra'))
+check('assets.yml explains itself', text.startsWith('# dsh-ledger'))
 check('assets.yml lives outside the package', !store.ASSETS_FILE.startsWith(root), store.ASSETS_FILE)
 const reread = await store.readDoc()
 check('round trip keeps every money row', reread.money.length === 4, String(reread.money.length))
@@ -298,7 +342,7 @@ const spawnOf = (result) => (spec) => ({
 async function ask(handler, method, path, body) {
   const request = {
     method,
-    url: `/dsh-infra${path}`,
+    url: `/dsh-ledger${path}`,
     async *[Symbol.asyncIterator]() {
       if (body !== undefined) yield Buffer.from(JSON.stringify(body))
     },
@@ -355,5 +399,5 @@ check('the import is written once and then read from assets.yml', Boolean((await
 
 await rm(dataDir, { recursive: true, force: true })
 
-console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
+console.log(failures === 0 ? `\n${checks} checks passed` : `\n${failures} of ${checks} check(s) failed`)
 process.exit(failures === 0 ? 0 : 1)

@@ -7,21 +7,21 @@ rate:
 
 money:
   - id: money-1
-    name: 招行活期
+    name: 示例现金
     kind: 现金
     currency: CNY
     quantity: 1
     price: 24000
     note: ''
   - id: money-2
-    name: 腾讯控股
+    name: 示例持仓
     kind: 持仓
     currency: HKD
     quantity: 200
     price: 380
     note: 港股，按顶部汇率折算
   - id: money-3
-    name: 房贷
+    name: 示例负债
     kind: 负债
     currency: CNY
     quantity: 1
@@ -30,40 +30,33 @@ money:
 
 devices:
   - id: device-1
-    name: 腾讯云
+    name: 示例服务器
     type: 服务器
-    address: ssh tx
-    specs: 2C2G · Ubuntu 24.04
-    status: 在线
-    note: 生产机，重启前先问
-  - id: device-2
-    name: 家里的 Linux
-    type: 电脑
-    address: ssh home
-    specs: RTX3080 16G · 32G · Ubuntu 26.04
-    status: 在线
-    note: 内网 tailscale
+    address: ssh HOST_ALIAS
+    specs: 2C2G · Linux
+    status: 未知
+    note: 可选备注
 
 repos:
   - id: repo-1
-    name: ChrisZqaq/dsh-infra
+    name: ChrisZqaq/dsh-ledger
     visibility: public
     language: JavaScript
     committedAt: 2026-11-13
     description: DSH 资产面板
-    remote: git@github.com:ChrisZqaq/dsh-infra.git
+    remote: git@github.com:ChrisZqaq/dsh-ledger.git
     note: 手写备注，同步不会覆盖
 
 keys:
   - id: key-1
-    name: OpenAI
+    name: PROVIDER
     purpose: 文本生成
-    value: sk-xxxxxxxxxxxxxxxxxxxx
-    location: 1Password
+    value: EXAMPLE_KEY
+    location: 密码管理器
     expiresAt: 2027-01-01
   - id: key-2
-    name: Anthropic
+    name: PROVIDER_2
     purpose: 长文本
     value: ''
-    location: 只在 1Password 里，这里只记位置
+    location: 只记密码管理器中的位置，不记密钥
     expiresAt: ''

@@ -1,5 +1,5 @@
 /**
- * Host half of dsh-infra.
+ * Host half of dsh-ledger.
  *
  * One job: serve the asset ledger panel. Everything that used to talk to
  * agents (prompt sections, command guards, host discovery) is gone on purpose —
@@ -8,10 +8,10 @@
  */
 import { createHandler } from './host/routes.js'
 
-export const name = 'dsh-infra'
+export const name = 'dsh-ledger'
 export const inject = ['webServer', 'subprocess']
 
-export const ROUTE = '/dsh-infra'
+export const ROUTE = '/dsh-ledger'
 
 export function apply(ctx) {
   ctx.inject(['webServer', 'subprocess'], (scope) => {

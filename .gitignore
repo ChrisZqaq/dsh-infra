@@ -1,16 +1,17 @@
 node_modules/
 *.log
 .DS_Store
-# 机器/密钥信息只放 ~/.dsh/infra/infra.yml，绝不入库
-infra.yml
-infra*.yml
-!infra.sample.yml
+# 个人账本只放 ~/.dsh/infra/，绝不入库
+ledger.yml
+ledger*.yml
+!ledger.sample.yml
 assets.yml
 assets*.yml
 !examples/assets.example.yml
 snapshots.jsonl
 # 设计原型（Kimi 产出，含自己的 node_modules，不进仓）
 app/
+design/
 *.pem
 *.p12
 id_rsa

@@ -16,7 +16,7 @@ import YAML from 'yaml'
 export const DIR = process.env.DSH_INFRA_DIR || join(homedir(), '.dsh', 'infra')
 export const ASSETS_FILE = join(DIR, 'assets.yml')
 export const SNAPSHOTS_FILE = join(DIR, 'snapshots.jsonl')
-/** Written by dsh-infra <= 0.1.1; imported once, then left alone. */
+/** Written by dsh-ledger <= 0.1.1; imported once, then left alone. */
 export const LEGACY_FILE = join(DIR, 'infra.yml')
 
 export const MONEY_KINDS = ['现金', '持仓', '负债']
@@ -171,7 +171,7 @@ export function snapshotOf(doc, at = new Date()) {
   }
 }
 
-/** dsh-infra 0.1.1 kept machines and remotes in infra.yml; fold them in once. */
+/** dsh-ledger 0.1.1 kept machines and remotes in infra.yml; fold them in once. */
 async function importLegacy() {
   let text
   try {
@@ -245,7 +245,7 @@ export async function readDoc() {
   }
 }
 
-const HEADER = `# dsh-infra — 个人资产记录。由插件维护，也可以手工编辑。\n# 这个文件在插件仓之外，永远不会被同步或上传。\n`
+const HEADER = `# dsh-ledger — 个人资产记录。由插件维护，也可以手工编辑。\n# 这个文件在插件仓之外，永远不会被同步或上传。\n`
 
 export async function writeDoc(raw) {
   const doc = normalizeDoc({ ...raw, updatedAt: new Date().toISOString() })

@@ -30,7 +30,7 @@ export function createHandler({ spawn }) {
   return async function handler(request, response) {
     try {
       const url = new URL(request.url, 'http://local')
-      const path = url.pathname.replace(/^\/dsh-infra/, '') || '/'
+      const path = url.pathname.replace(/^\/dsh-ledger/, '') || '/'
       const method = request.method ?? 'GET'
 
       if (path === '/assets' && method === 'GET') {
